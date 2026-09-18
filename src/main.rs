@@ -1,6 +1,7 @@
 //! L4 TCP load balancer: accept → pick backend (round-robin) → connect → copy bytes.
 //!
 //!   tiny-lb 0.0.0.0:8080 127.0.0.1:8001 127.0.0.1:8002
+//!   tiny-lb echo 8001
 
 use std::io;
 use std::net::SocketAddr;
@@ -13,9 +14,16 @@ use tokio::net::{TcpListener, TcpStream};
 async fn main() {
     let mut args = std::env::args().skip(1);
     let first = args.next().unwrap_or_else(|| {
-        eprintln!("usage: tiny-lb <listen> <backend> [backend...]");
+        eprintln!("usage:\n  tiny-lb <listen> <backend> [backend...]\n  tiny-lb echo <port>");
         std::process::exit(1);
     });
+
+    if first == "echo" {
+        let port: u16 = args.next().expect("echo port").parse().unwrap();
+        echo(port).await.unwrap();
+        return;
+    }
+
     let listen: SocketAddr = first.parse().expect("listen addr");
     let backends: Vec<SocketAddr> = args.map(|s| s.parse().expect("backend addr")).collect();
     if backends.is_empty() {
@@ -44,6 +52,18 @@ async fn serve(listen: SocketAddr, backends: Vec<SocketAddr>) -> io::Result<()> 
                 }
                 Err(e) => eprintln!("{peer} -> {addr} failed: {e}"),
             }
+        });
+    }
+}
+
+async fn echo(port: u16) -> io::Result<()> {
+    let listener = TcpListener::bind(("0.0.0.0", port)).await?;
+    eprintln!("echo 0.0.0.0:{port}");
+    loop {
+        let (mut s, _) = listener.accept().await?;
+        tokio::spawn(async move {
+            let (mut r, mut w) = s.split();
+            let _ = tokio::io::copy(&mut r, &mut w).await;
         });
     }
 }
