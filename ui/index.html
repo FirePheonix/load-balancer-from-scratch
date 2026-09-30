@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>tiny-lb</title>
+  <style>
+    :root { --bg:#0c111c; --card:#151c2c; --line:#2a3348; --txt:#e8eefc; --dim:#8b9bb8; --ok:#3ddc97; --bad:#ff6b6b; --acc:#4cc9f0; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: ui-sans-serif, system-ui, sans-serif; background: var(--bg); color: var(--txt); }
+    header { display: flex; justify-content: space-between; align-items: center; padding: 16px 24px; border-bottom: 1px solid var(--line); }
+    h1 { margin: 0; font-size: 18px; letter-spacing: .12em; }
+    header span { color: var(--dim); font-size: 13px; }
+    main { padding: 20px 24px; max-width: 1100px; margin: 0 auto; }
+    .stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+    .card h2 { margin: 0 0 6px; font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: .08em; }
+    .n { font-variant-numeric: tabular-nums; font-size: 28px; font-weight: 650; }
+    .hint { margin: 16px 0; padding: 12px 14px; border: 1px dashed var(--line); border-radius: 10px; color: var(--dim); font-size: 13px; }
+    code { color: var(--acc); }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); }
+    th { color: var(--dim); font-weight: 600; }
+    .pill { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); }
+    .ok { color: var(--ok); } .bad { color: var(--bad); }
+    button { background: #1c2746; color: var(--txt); border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; cursor: pointer; font-size: 12px; }
+    .barwrap { height: 10px; background: #0c111c; border-radius: 6px; overflow: hidden; }
+    .bar { height: 100%; background: var(--acc); width: 0; }
+    @media (max-width: 800px) { .stats { grid-template-columns: repeat(2, 1fr); } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>TINY-LB</h1>
+    <span id="meta">connecting…</span>
+  </header>
+  <main>
+    <section class="stats">
+      <div class="card"><h2>Active</h2><div class="n" id="active">0</div></div>
+      <div class="card"><h2>Opened</h2><div class="n" id="opened">0</div></div>
+      <div class="card"><h2>Failed</h2><div class="n" id="failed">0</div></div>
+      <div class="card"><h2>Rejected</h2><div class="n" id="rejected">0</div></div>
+      <div class="card"><h2>Bytes</h2><div class="n" id="bytes">0</div></div>
+    </section>
+    <p class="hint">
+      Scale test (real TCP through the LB, not fake UI numbers):<br />
+      <code>cargo run -- load 127.0.0.1:18080 500 30</code>
+      &nbsp;→ 500 held connections for 30s. Watch <b>Active</b> and the bars.
+    </p>
+    <section class="card">
+      <h2>Backends</h2>
+      <table>
+        <thead><tr><th>Addr</th><th>State</th><th>Active</th><th>Total</th><th>Connect fail</th><th>Share</th><th></th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </section>
+  </main>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    function fmt(n) {
+      if (n < 1024) return String(n);
+      if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KiB";
+      return (n / 1024 / 1024).toFixed(2) + " MiB";
+    }
+    async function act(addr, action) {
+      await fetch("/api/backend", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ addr, action }),
+      });
+    }
+    async function tick() {
+      const s = await (await fetch("/api/status")).json();
+      $("meta").textContent = "listen " + s.listen + " · max " + s.max_conns;
+      $("active").textContent = s.active;
+      $("opened").textContent = s.opened;
+      $("failed").textContent = s.failed;
+      $("rejected").textContent = s.rejected;
+      $("bytes").textContent = fmt(s.bytes);
+      const max = Math.max(1, ...s.backends.map((b) => b.active));
+      $("rows").innerHTML = s.backends.map((b) => {
+        const st = b.disabled ? "DISABLED" : b.draining ? "DRAINING" : b.healthy ? "HEALTHY" : "UNHEALTHY";
+        const cls = b.healthy && !b.disabled && !b.draining ? "ok" : "bad";
+        const w = Math.round((b.active / max) * 100);
+        return `<tr>
+          <td>${b.addr}</td>
+          <td><span class="pill ${cls}">${st}</span></td>
+          <td>${b.active}</td><td>${b.total}</td><td>${b.connect_fail}</td>
+          <td><div class="barwrap"><div class="bar" style="width:${w}%"></div></div></td>
+          <td>
+            <button data-a="drain" data-addr="${b.addr}">Drain</button>
+            <button data-a="disable" data-addr="${b.addr}">Disable</button>
+            <button data-a="enable" data-addr="${b.addr}">Enable</button>
+          </td>
+        </tr>`;
+      }).join("");
+    }
+    $("rows").addEventListener("click", (e) => {
+      const btn = e.target.closest("button");
+      if (btn) act(btn.dataset.addr, btn.dataset.a);
+    });
+    tick().catch(() => {});
+    setInterval(() => tick().catch(() => {}), 250);
+  </script>
+</body>
+</html>
