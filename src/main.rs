@@ -43,14 +43,18 @@ async fn serve(listen: SocketAddr, backends: Vec<SocketAddr>) -> io::Result<()> 
         let backends = Arc::clone(&backends);
         let rr = Arc::clone(&rr);
         tokio::spawn(async move {
-            let i = rr.fetch_add(1, Ordering::Relaxed) % backends.len();
-            let addr = backends[i];
-            match TcpStream::connect(addr).await {
-                Ok(mut backend) => {
-                    eprintln!("{peer} -> {addr}");
-                    let _ = copy_bidirectional(&mut client, &mut backend).await;
+            let n = backends.len();
+            let start = rr.fetch_add(1, Ordering::Relaxed);
+            for off in 0..n {
+                let addr = backends[(start + off) % n];
+                match TcpStream::connect(addr).await {
+                    Ok(mut backend) => {
+                        eprintln!("{peer} -> {addr}");
+                        let _ = copy_bidirectional(&mut client, &mut backend).await;
+                        return;
+                    }
+                    Err(e) => eprintln!("{peer} -> {addr} failed: {e}"),
                 }
-                Err(e) => eprintln!("{peer} -> {addr} failed: {e}"),
             }
         });
     }
